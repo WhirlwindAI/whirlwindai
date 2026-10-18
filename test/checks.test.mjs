@@ -68,7 +68,7 @@ test("every check fires on the broken project", () => {
     "secrets-tracked": /\.env is committed/,
     "secrets-hardcoded": /lib\/leak\.ts/,
     "secrets-public": /SERVICE_ROLE/,
-    "ai-auth": /app\/api\/summarize\/route\.ts calls a model with no sign-in check/,
+    "ai-auth": /app\/api\/summarize\/route\.ts calls a model \(OpenAI\) with no sign-in check/,
     "ai-limit": /app\/api\/chat\/route\.ts/,
     models: /gpt-4-32k[\s\S]*claude-3-5-sonnet-20241022|claude-3-5-sonnet-20241022[\s\S]*gpt-4-32k/,
     "stripe-webhook": /without verifying the signature/,
@@ -117,6 +117,82 @@ test("a clean project passes", () => {
   const found = [...ids].filter(([, f]) => f.length).map(([id, f]) => `${id}: ${f.map((x) => x.file + " " + x.msg).join("; ")}`);
   assert.deepEqual(found, []);
   assert.equal(code, 0);
+});
+
+test("other stacks: LangChain, Bedrock, tRPC, webhooks, Firebase, raw SQL", () => {
+  const { ids } = run(project({
+    "package.json": JSON.stringify({ name: "x", dependencies: { next: "16.0.0", "@langchain/openai": "1", "@aws-sdk/client-bedrock-runtime": "3", "@prisma/client": "5" } }),
+    // LangChain: import in lib, .invoke in the route.
+    "lib/chain.ts": 'import { ChatOpenAI } from "@langchain/openai";\nexport const chain = new ChatOpenAI({ model: "gpt-4o" });\n',
+    "app/api/ask/route.ts": 'import { chain } from "../../../lib/chain";\nexport async function POST(req) { return Response.json(await chain.invoke("hi")); }\n',
+    // Bedrock, guarded by the project's own helper name.
+    "app/api/bed/route.ts": 'import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";\nimport { ensureMember } from "../../../lib/m";\nconst c = new BedrockRuntimeClient({});\nexport async function POST() { await ensureMember(); return Response.json(await c.send(new ConverseCommand({}))); }\n',
+    "lib/m.ts": "export async function ensureMember() {}\n",
+    // tRPC: the endpoint has no auth, the router beside the call does.
+    "app/api/trpc/[trpc]/route.ts": 'import { appRouter } from "../../../../server/router";\nexport const POST = (req) => appRouter(req);\n',
+    "server/router.ts": 'import { ChatOpenAI } from "@langchain/openai";\nconst m = new ChatOpenAI({});\nexport const appRouter = protectedProcedure.mutation(() => m.invoke("x"));\n',
+    // A model call through a type-only import is not a model call.
+    "app/api/types/route.ts": 'import type { Message } from "ai";\nexport async function GET(db) { return Response.json(await db.query("x")); }\n',
+    "app/api/webhooks/clerk/route.ts": 'export async function POST(req) { const evt = await req.json(); if (evt.type === "user.created") {} return Response.json({}); }\n',
+    "app/api/webhooks/ok/route.ts": 'import { verifyWebhook } from "@clerk/nextjs/webhooks";\nexport async function POST(req) { const evt = await verifyWebhook(req); return Response.json({}); }\n',
+    "firestore.rules": "rules_version = '2';\nservice cloud.firestore { match /databases/{db}/documents { match /{d=**} { allow read, write: if request.time < timestamp.date(2026, 1, 1); } } }\n",
+    "lib/search.ts": 'export const find = (prisma, q) => prisma.$queryRawUnsafe(`SELECT * FROM posts WHERE title = \'${q}\'`);\nexport const safe = (prisma, q) => prisma.$queryRaw`SELECT * FROM posts WHERE title = ${q}`;\n',
+  }));
+  const text = (id) => (ids.get(id) || []).map((f) => `${f.file} ${f.msg}`).join("\n");
+  assert.match(text("ai-auth"), /app\/api\/ask\/route\.ts calls a model \(LangChain\)/);
+  assert.doesNotMatch(text("ai-auth"), /bed|trpc|types/);
+  assert.match(text("webhooks"), /clerk\/route\.ts handles Clerk webhooks without verifying/);
+  assert.doesNotMatch(text("webhooks"), /webhooks\/ok/);
+  assert.match(text("firebase-rules"), /test-mode rules/);
+  assert.match(text("raw-sql"), /lib\/search\.ts/);
+});
+
+test("monorepo app: aliases inherited through extends, and Next 16 proxy.ts", () => {
+  const repo = project({
+    "packages/tsconfig/nextjs.json": JSON.stringify({ compilerOptions: { paths: { "~/*": ["../../apps/web/src/*"] } } }),
+    "node_modules/@repo/tsconfig/nextjs.json": JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["../../../apps/web/src/*"] } } }),
+    "apps/web/package.json": JSON.stringify({ name: "web", dependencies: { next: "16.0.0", openai: "4" } }),
+    "apps/web/tsconfig.json": JSON.stringify({ extends: "@repo/tsconfig/nextjs.json" }),
+    "apps/web/src/lib/a.ts": "export const a = 1;\n",
+    "apps/web/src/app/page.tsx": 'import { a } from "@/lib/a";\nexport default function P() { return a; }\n',
+    "apps/web/src/proxy.ts": 'export async function proxy() { const user = await getUser(); }\n',
+    "apps/web/src/app/api/x/route.ts": 'import OpenAI from "openai";\nconst o = new OpenAI();\nexport async function POST() { return Response.json(await o.responses.create({ model: "gpt-4o" })); }\n',
+  });
+  const { ids } = run(join(repo, "apps/web"));
+  assert.deepEqual(ids.get("imports"), []);
+  assert.match(JSON.stringify(ids.get("ai-auth")), /Confirm src\/proxy\.ts covers this path/);
+});
+
+test("false positives from real projects stay quiet", () => {
+  const { ids } = run(project({
+    "package.json": JSON.stringify({ name: "x", dependencies: { next: "15.0.0", "drizzle-orm": "1", stripe: "1", "@anthropic-ai/sdk": "1" } }),
+    "tsconfig.json": JSON.stringify({ compilerOptions: { paths: { "@/*": ["./src/*"], "@/public/*": ["./public/*"] } } }),
+    "public/logo.svg": "<svg/>",
+    "src/app/page.tsx": 'import logo from "@/public/logo.svg";\nexport default function P() { return logo; }\n',
+    // saas-starter: the parameter is compared, never redirected to.
+    "src/app/actions.ts": '"use server";\nimport { redirect } from "next/navigation";\nexport async function signIn(formData) {\n  const redirectTo = formData.get("redirect");\n  if (redirectTo === "checkout") return;\n  redirect("/dashboard");\n}\n',
+    // documenso: validated by the project's own helper.
+    "src/app/signin/route.ts": 'export function GET(request) {\n  let returnTo = new URL(request.url).searchParams.get("returnTo");\n  returnTo = isValidReturnTo(returnTo) ? returnTo : "/";\n  return redirect(returnTo);\n}\n',
+    // dub: mentions a Stripe field, handles another provider's webhook with a signature helper.
+    "src/app/api/appsflyer/webhook/route.ts": 'import { verifyAppsflyerSignature } from "../../../../lib/v";\nexport async function POST(req) { await verifyAppsflyerSignature(req); const select = { stripeConnectId: true }; return Response.json({}); }\n',
+    "src/lib/v.ts": "export async function verifyAppsflyerSignature(r) {}\n",
+    // dub: an authenticated API for managing webhooks is not a receiver.
+    "src/app/api/webhooks/[id]/route.ts": 'export const GET = withWorkspace(async () => Response.json([]));\n',
+    // dub: admin routes wrapped in withAdmin.
+    "src/app/api/admin/route.ts": 'import Anthropic from "@anthropic-ai/sdk";\nconst a = new Anthropic();\nexport const POST = withAdmin(async () => Response.json(await a.messages.create({})));\n',
+    // chatbot-ui: an organisation ID is not a secret.
+    "src/lib/org.ts": "export const org = process.env.NEXT_PUBLIC_OPENAI_ORGANIZATION_ID;\n",
+    // Drizzle migrations: no Supabase API in front, so RLS doesn't apply.
+    "drizzle/0000_init.sql": "create table users (id serial primary key);\n",
+    // An embedded project with its own config is checked on its own.
+    "preview-kit/package.json": "{}",
+    "preview-kit/ui/dialog.tsx": 'import { Button } from "@/components/ui/button";\n',
+  }));
+  // error-pages, env-example and ai-limit (the admin route has no limit) are correct here.
+  const found = [...ids]
+    .filter(([id, f]) => f.length && !["error-pages", "env-example", "ai-limit"].includes(id))
+    .map(([id, f]) => `${id}: ${f.map((x) => x.file + " " + x.msg).join("; ")}`);
+  assert.deepEqual(found, []);
 });
 
 test("lexer separates code from comments, strings and templates", () => {

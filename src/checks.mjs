@@ -13,17 +13,78 @@ const warn = (file, msg, detail) => ({ level: "warn", file, msg, detail });
 const mask = (s) => s.slice(0, 7) + "…";
 const SOURCE_RE = /\.(m|c)?[jt]sx?$/;
 
-// A model call, in any of the SDKs a Next.js app is likely to use.
-const CALLS_MODEL = /\.chat\.completions\.create\s*\(|\.responses\.create\s*\(|\.messages\.(create|stream)\s*\(|\.images\.(generate|edit)\s*\(|\b(generateText|streamText|generateObject|streamObject|streamUI)\s*\(|\.generateContent(Stream)?\s*\(|\.models\.generate(Content|Images)\w*\s*\(|new AIClient\s*\(/;
-// Method names like .messages.create are shared with other SDKs (Mailgun), so
-// a call only counts in a file that imports an AI SDK, or that calls a model
-// API over HTTP.
-const AI_IMPORT = /from\s+["'](openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai|ai|@ai-sdk\/[\w-]+|groq-sdk|@mistralai\/mistralai|cohere-ai|replicate)["']|require\(\s*["'](openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai)["']/;
-const AI_HTTP = /api\.openai\.com\/v1\/(chat|responses|images|completions)|api\.anthropic\.com\/v1\/messages|generativelanguage\.googleapis\.com/;
-const callsModel = (t) => /new AIClient\s*\(/.test(t) || AI_HTTP.test(t) || (CALLS_MODEL.test(t) && AI_IMPORT.test(t));
+// Model calls, per provider: [name, package names, call pattern]. Method
+// names like .invoke or .messages.create are shared with unrelated libraries
+// (Mailgun), so a call only counts when the endpoint's code also imports that
+// provider's package.
+const PROVIDERS = [
+  ["OpenAI", "openai", /\.chat\.completions\.(create|stream|parse)\s*\(|\.responses\.(create|stream)\s*\(|\.images\.(generate|edit)\s*\(|\.audio\.\w+\.create\s*\(|\.embeddings\.create\s*\(|\.completions\.create\s*\(/],
+  ["Anthropic", "@anthropic-ai\\/[\\w-]+", /\.messages\.(create|stream)\s*\(/],
+  ["Gemini", "@google\\/(?:generative-ai|genai)|@google-cloud\\/vertexai", /\.generateContent(Stream)?\s*\(|\.models\.generate\w*\s*\(|\.sendMessage(Stream)?\s*\(/],
+  ["AI SDK", "ai|@ai-sdk\\/[\\w-]+|@openrouter\\/[\\w-]+", /\b(generateText|streamText|generateObject|streamObject|streamUI|embed|embedMany|generateImage|experimental_generateImage|generateSpeech|experimental_generateSpeech|experimental_transcribe)\s*\(/],
+  ["Groq", "groq-sdk", /\.chat\.completions\.create\s*\(/],
+  ["Mistral", "@mistralai\\/mistralai", /\.chat\.(complete|stream)\s*\(|\.fim\.complete\s*\(/],
+  ["Together", "together-ai", /\.chat\.completions\.create\s*\(|\.images\.create\s*\(/],
+  ["Cohere", "cohere-ai", /\.(chat|chatStream|generate|embed|rerank)\s*\(/],
+  ["LangChain", "langchain(?:\\/[\\w\\/-]+)?|@langchain\\/[\\w\\/-]+", /\.(invoke|batch|stream|streamEvents|call|predict)\s*\(/],
+  ["LlamaIndex", "llamaindex(?:\\/[\\w\\/-]+)?|@llamaindex\\/[\\w-]+", /\.(chat|complete|query)\s*\(/],
+  ["Mastra", "@mastra\\/[\\w-]+", /\.(generate|stream)\s*\(/],
+  ["Ollama", "ollama(?:\\/browser)?", /\.(chat|generate|embed)\s*\(/],
+  ["Replicate", "replicate", /\.(run|stream)\s*\(|predictions\.create\s*\(/],
+  ["Hugging Face", "@huggingface\\/inference", /\b(chatCompletion|chatCompletionStream|textGeneration|textGenerationStream|textToImage|featureExtraction)\s*\(/],
+  ["fal", "@fal-ai\\/[\\w-]+", /\.(subscribe|run|stream)\s*\(/],
+  ["Bedrock", "@aws-sdk\\/client-bedrock-runtime", /new (InvokeModel|InvokeModelWithResponseStream|Converse|ConverseStream)Command\s*\(/],
+  ["ElevenLabs", "elevenlabs|@elevenlabs\\/[\\w-]+", /textToSpeech\.(convert|stream)\s*\(/],
+].map(([name, pkgs, call]) => [name, new RegExp(`^(?:${pkgs})$`), call]);
+// Model APIs called over plain HTTP.
+const AI_HTTP = [
+  ["OpenAI", /api\.openai\.com\/v1\/(chat|responses|images|completions|audio|embeddings)/],
+  ["Anthropic", /api\.anthropic\.com\/v1\/messages/],
+  ["Gemini", /generativelanguage\.googleapis\.com/],
+  ["OpenRouter", /openrouter\.ai\/api/],
+  ["Groq", /api\.groq\.com/], ["Mistral", /api\.mistral\.ai/], ["Together", /api\.together\.(xyz|ai)/],
+  ["Perplexity", /api\.perplexity\.ai/], ["xAI", /api\.x\.ai/], ["DeepSeek", /api\.deepseek\.com/],
+  ["Fireworks", /api\.fireworks\.ai/], ["Cohere", /api\.cohere\.(ai|com)/], ["Replicate", /api\.replicate\.com/],
+  ["Hugging Face", /(api-inference|router)\.huggingface\.co/], ["fal", /\bfal\.run\b/], ["ElevenLabs", /api\.elevenlabs\.io/],
+];
+// Which provider, if any, the endpoint reaches. `files` is the endpoint plus
+// its local imports.
+// Per-file signals, computed once: which provider packages it imports (type
+// imports excluded), which providers' call shapes appear, and direct HTTP calls.
+const signalCache = new WeakMap();
+function signals(p, f) {
+  let byFile = signalCache.get(p);
+  if (!byFile) signalCache.set(p, (byFile = new Map()));
+  if (!byFile.has(f)) {
+    const t = p.code(f);
+    const specs = p.importsOf(f, { values: true });
+    byFile.set(f, {
+      aiClient: /new AIClient\s*\(/.test(t),
+      http: (AI_HTTP.find(([, re]) => re.test(t)) || [])[0],
+      imports: new Set(PROVIDERS.filter(([, imp]) => specs.some((sp) => imp.test(sp))).map(([n]) => n)),
+      calls: new Set(PROVIDERS.filter(([, , call]) => call.test(t)).map(([n]) => n)),
+    });
+  }
+  return byFile.get(f);
+}
+function modelCall(p, files) {
+  const sig = files.map((f) => signals(p, f));
+  if (sig.some((x) => x.aiClient)) return "AI";
+  const http = sig.find((x) => x.http);
+  if (http) return http.http;
+  for (const [name] of PROVIDERS) if (sig.some((x) => x.imports.has(name)) && sig.some((x) => x.calls.has(name))) return name;
+  return null;
+}
 // A redirect target checked to be a same-site path, or against an allowlist.
-const SAFE_TARGET = /startsWith\(\s*["'`]\/|\/\^\\\/|safe\w*\(|isSafe|isRelative|sanitize|allowlist|ALLOWED|\.origin\s*===|\.host\s*===/;
-const CHECKS_AUTH = /\b(getUser|getServerSession|getSession|currentUser|auth|getAuth|requireUser|requireAuth|requireSession|withAuth|withApiAuthRequired|getToken|verifyToken|verifyIdToken|validateRequest|getCurrentUser|getAppUser|getAuthenticatedUser|getUserOrThrow|protect)\s*\(|\bwithAuth\b|\bauth\.protect\b/;
+const SAFE_TARGET = /startsWith\(\s*["'`]\/|\/\^\\\/|safe\w*\(|isSafe|isValid\w*(Url|Redirect|Return|Path|Next|Callback)|isRelative|isInternal|isLocal\w*Url|sanitize|normalize\w*(Return|Redirect)|allowlist|ALLOWED|\.origin\s*===|\.host\s*===/;
+// Who-is-calling checks: the common auth libraries by name, then the usual
+// shapes of a project's own helper (getUser, requireSession, ensureMember…),
+// wrappers (withAuth) and authenticated tRPC / next-safe-action procedures.
+const CHECKS_AUTH = new RegExp([
+  /\b(auth|currentUser|getAuth|protect|getIronSession|getKindeServerSession|validateRequest|getServerAuthSession|getServerSession|getToken|verifyIdToken)\s*\(/.source,
+  /\b(get|require|ensure|check|verify|validate|assert|fetch|load|read)\w*(User|Session|Auth|Member|Token|Claims|Viewer|Account|Org|Identity|Profile|Admin|Workspace)\w*\s*\(/.source,
+  /\bwith\w*(Auth|Session|User|Workspace|Team|Org|Admin|Project|Account|Member)\b|\bauth\.protect\b|\b(protected|authed|private|authenticated|user)Procedure\b|\bauth(enticated)?Action(Client)?\b/.source,
+].join("|"));
 const LIMITS = /ratelimit|rate_limit|rateLimit|limiter|throttle|quota|credits?\b|\bcharge\s*\(|consume_?\w*\s*\(|checkUsage|usageLimit|maxRequests/i;
 
 export const CHECKS = [
@@ -45,6 +106,9 @@ export const CHECKS = [
         if (/(^|\/)\.env(\.local|\.development\.local|\.production\.local)?$/.test(f) && !p.tracked.has(f)) continue;
         if (/\.(png|jpe?g|gif|webp|ico|woff2?|ttf|otf|mp4|webm|pdf|zip|lock)$/.test(f) || /package-lock\.json$/.test(f)) continue;
         const m = p.read(f).match(KEY);
+        // Webhook secrets and Google browser keys in tests are usually fakes;
+        // the unambiguous live-key prefixes count everywhere.
+        if (m && p.isTooling(f) && !/^(sk-|sk_live_|rk_live_|ghp_|github_pat_)/.test(m[1])) continue;
         if (m && !p.ignored(f, "secrets-hardcoded"))
           out.push(fail(f, `contains what looks like a live key (${mask(m[1])})`, "Move it to an environment variable and rotate it: it is in your git history now."));
       }
@@ -57,7 +121,9 @@ export const CHECKS = [
       // NEXT_PUBLIC_ values are inlined into the JavaScript every visitor downloads.
       // Matched where it is read or set, not anywhere it is named: a list of
       // forbidden names is not a leak.
-      const NAME = "NEXT_PUBLIC_[A-Z0-9_]*(?:SECRET|SERVICE_ROLE|PRIVATE|PASSWORD|OPENAI|ANTHROPIC|GEMINI|STRIPE_SK|WEBHOOK)[A-Z0-9_]*";
+      // Secret-shaped names only: an organisation ID or a publishable key is
+      // meant to be public.
+      const NAME = "NEXT_PUBLIC_(?:[A-Z0-9_]*(?:SECRET|SERVICE_ROLE|PRIVATE_KEY|PASSWORD|STRIPE_SK)[A-Z0-9_]*|(?:OPENAI|ANTHROPIC|CLAUDE|GEMINI|GOOGLE_AI|GROQ|MISTRAL|REPLICATE|TOGETHER|OPENROUTER|PERPLEXITY|ELEVENLABS|RESEND|SENDGRID|DEEPSEEK|XAI)_?(?:API_)?KEY)";
       const IN_CODE = new RegExp(`process\\.env\\.(${NAME})|process\\.env\\[\\s*["'](${NAME})["']`);
       const IN_ENV = new RegExp(`^\\s*(?:export\\s+)?(${NAME})\\s*=`, "m");
       const out = [];
@@ -84,23 +150,27 @@ export const CHECKS = [
   {
     id: "ai-auth", group: "AI cost", title: "Every endpoint that calls a model checks who is calling",
     run(p) {
-      const middleware = ["middleware.ts", "middleware.js", "src/middleware.ts", "src/middleware.js"].find(p.has);
       // Middleware only counts if it checks auth and its matcher reaches /api.
       // No matcher means every path.
       let mwAuth = false;
-      if (middleware && CHECKS_AUTH.test(p.code(middleware))) {
-        const matcher = (p.code(middleware).match(/matcher\s*:\s*(\[[^\]]*\]|["'][^"']*["'])/) || [])[1];
+      if (p.middleware && CHECKS_AUTH.test(p.code(p.middleware))) {
+        const matcher = (p.code(p.middleware).match(/matcher\s*:\s*(\[[^\]]*\]|["'][^"']*["'])/) || [])[1];
         mwAuth = !matcher || (/\(\?!/.test(matcher) ? !/\(\?![^)]*api/.test(matcher) : /\/api/.test(matcher));
       }
       const out = [];
       for (const f of p.endpoints) {
         const reach = p.withLocalImports(f);
-        if (!reach.some((r) => callsModel(p.code(r))) || p.ignored(f, "ai-auth")) continue;
-        if (CHECKS_AUTH.test(p.code(f))) continue;
+        const provider = modelCall(p, reach);
+        if (!provider || p.ignored(f, "ai-auth")) continue;
+        // The check can sit in the endpoint itself, or beside the model call
+        // (a tRPC router, a service function).
+        if (CHECKS_AUTH.test(p.code(f)) || reach.some((r) => r !== f && modelCall(p, [r]) && CHECKS_AUTH.test(p.code(r)))) continue;
         out.push(
           mwAuth
-            ? warn(f, "calls a model and does not check the user itself", `Confirm ${middleware} covers this path, or anyone can run it on your AI bill.`)
-            : fail(f, "calls a model with no sign-in check", "Anyone on the internet can call it and spend your AI budget."),
+            ? warn(f, `calls a model (${provider}) and does not check the user itself`, `Confirm ${p.middleware} covers this path, or anyone can run it on your AI bill.`)
+            : reach.some((r) => LIMITS.test(p.code(r)))
+              ? warn(f, `calls a model (${provider}) with no sign-in check, only a rate limit`, "Fine for a public demo. Otherwise anyone can use it, up to the limit, on your AI bill.")
+              : fail(f, `calls a model (${provider}) with no sign-in check`, "Anyone on the internet can call it and spend your AI budget."),
         );
       }
       return out;
@@ -112,10 +182,11 @@ export const CHECKS = [
       const out = [];
       for (const f of p.endpoints) {
         const reach = p.withLocalImports(f);
-        if (!reach.some((r) => callsModel(p.code(r))) || p.ignored(f, "ai-limit")) continue;
-        if (!CHECKS_AUTH.test(p.code(f))) continue; // ai-auth already reports it
+        const provider = modelCall(p, reach);
+        if (!provider || p.ignored(f, "ai-limit")) continue;
+        if (!CHECKS_AUTH.test(p.code(f)) && !reach.some((r) => r !== f && modelCall(p, [r]) && CHECKS_AUTH.test(p.code(r)))) continue; // ai-auth reports it
         if (!reach.some((r) => LIMITS.test(p.code(r))))
-          out.push(warn(f, "calls a model with no rate limit, credits or quota", "One signed-in user, or one free trial, can run up an unbounded bill."));
+          out.push(warn(f, `calls a model (${provider}) with no rate limit, credits or quota`, "One signed-in user, or one free trial, can run up an unbounded bill."));
       }
       return out;
     },
@@ -149,9 +220,11 @@ export const CHECKS = [
       const out = [];
       for (const f of p.endpoints) {
         const t = p.code(f);
-        if (!/stripe/i.test(t) || !(/webhook/i.test(f) || /constructEvent|stripe-signature|checkout\.session\.completed/.test(t))) continue;
+        const STRIPE_EVENTS = /constructEvent|stripe-signature|checkout\.session\.|customer\.subscription\.|invoice\.(paid|payment_)|payment_intent\.|charge\.(succeeded|refunded)|Stripe\.Event\b|v2\.core\./i;
+        if (!/stripe/i.test(t) || !STRIPE_EVENTS.test(t) || !/webhook/i.test(f + t)) continue;
         if (p.ignored(f, "stripe-webhook")) continue;
-        if (!/constructEvent(Async)?\s*\(/.test(t))
+        const verified = p.withLocalImports(f).some((r) => /constructEvent(Async)?\s*\(|parse\w*Event\w*\s*\(|parseEventNotification/.test(p.code(r)));
+        if (!verified)
           out.push(fail(f, "handles Stripe events without verifying the signature", "Anyone can POST a fake checkout.session.completed and give themselves access. Use stripe.webhooks.constructEvent."));
         else if (/\.json\s*\(\s*\)/.test(t.split(/constructEvent/)[0]))
           out.push(fail(f, "parses the body as JSON before verifying the signature", "Verification needs the raw body. Use await req.text()."));
@@ -194,17 +267,58 @@ export const CHECKS = [
     },
   },
 
+  {
+    id: "webhooks", group: "Payments", title: "Other webhooks verify their signature",
+    run(p) {
+      // Stripe has its own check above. Anything else named webhook, or
+      // handling a known provider's events, must check a signature or secret.
+      const KNOWN = [
+        ["Lemon Squeezy", /lemon-?squeezy|x-signature/i],
+        ["Paddle", /paddle/i],
+        ["Polar", /@polar-sh|polar\.sh/i],
+        ["Clerk", /@clerk|svix|user\.created/i],
+        ["GitHub", /x-hub-signature|x-github-event/i],
+        ["Resend", /email\.(delivered|bounced|opened)/],
+        ["Supabase", /supabase.*webhook|webhook.*supabase/i],
+      ];
+      const VERIFIES = /constructEvent|parse\w*Event|createHmac|timingSafeEqual|\.verify\s*\(|verify\w*(Webhook|Signature|Request)\w*\s*\(|validate\w*(Event|Signature|Webhook)\w*\s*\(|unmarshal|is\w*Signature\w*\s*\(|\bWebhooks\s*\(|WEBHOOK_SECRET|webhookSecret|signingSecret|SIGNING_SECRET|CRON_SECRET|verifySignatureAppRouter|IP_RANGES|isIpInRange|ipAllowlist|allowedIps/;
+      const out = [];
+      for (const f of p.endpoints) {
+        const t = p.code(f);
+        if (/stripe/i.test(t) && /constructEvent|stripe-signature|checkout\.session/.test(t)) continue;
+        const known = KNOWN.find(([, re]) => re.test(t) || re.test(f));
+        if (!/webhook/i.test(f) && !(known && /webhook/i.test(t))) continue;
+        // An authenticated API that manages webhooks is not a receiver.
+        if (CHECKS_AUTH.test(t) || p.ignored(f, "webhooks")) continue;
+        if (p.withLocalImports(f).some((r) => VERIFIES.test(p.code(r)))) continue;
+        out.push(known
+          ? fail(f, `handles ${known[0]} webhooks without verifying the signature`, "Anyone who finds the URL can send fake events. Verify the signature with the provider's signing secret.")
+          : warn(f, "is a webhook with no visible signature or secret check", "Anyone who finds the URL can send fake events. Verify the sender before acting on them."));
+      }
+      return out;
+    },
+  },
+
   // ── Auth ────────────────────────────────────────────────────────────────
   {
     id: "open-redirect", group: "Auth", title: "No open redirects",
     run(p) {
+      const NAMES = "next|redirect|redirectTo|redirect_to|redirectUrl|returnTo|return_to|returnUrl|callbackUrl|callback|continue|from";
+      const READ_INTO = new RegExp(String.raw`\b(\w+)\s*=[^\n;]*?\.get\(\s*["'](${NAMES})["']\s*\)`, "g");
+      const READ = new RegExp(String.raw`\.get\(\s*["'](${NAMES})["']\s*\)`, "g");
+      const SINK = String.raw`(?:redirect|permanentRedirect|push|replace|assign)\s*\(\s*(?:new URL\(\s*)?`;
       const out = [];
       for (const f of p.source) {
         const t = p.code(f);
-        const m = t.match(/\.get\(\s*["'](next|redirect|redirectTo|redirect_to|returnTo|return_to|callbackUrl|callback|continue|from)["']\s*\)/);
-        if (!m || !/redirect\s*\(|\.push\s*\(|\.replace\s*\(|location\s*(\.href\s*)?=|location\.assign/.test(t)) continue;
         if (SAFE_TARGET.test(t) || p.ignored(f, "open-redirect")) continue;
-        out.push(fail(f, `redirects to the "${m[1]}" query parameter unchecked`, `A link with ?${m[1]}=https://evil.example signs the user in and hands them to another site. Accept only paths starting with a single "/".`));
+        // Used as the target: directly, or through the variable it was read into.
+        const hits = [
+          ...[...t.matchAll(READ)].filter((m) => new RegExp(SINK + String.raw`[^)\n]*\.get\(\s*["']${m[1]}["']`).test(t)).map((m) => m[1]),
+          ...[...t.matchAll(READ_INTO)].filter(([, v]) =>
+            new RegExp(SINK + String.raw`${v}\b`).test(t) || new RegExp(String.raw`location(\.href)?\s*=\s*${v}\b|redirect(To)?:\s*${v}\b`).test(t)).map((m) => m[2]),
+        ];
+        if (hits.length)
+          out.push(fail(f, `redirects to the "${hits[0]}" query parameter unchecked`, `A link with ?${hits[0]}=https://evil.example signs the user in and hands them to another site. Accept only paths starting with a single "/".`));
       }
       return out;
     },
@@ -213,7 +327,7 @@ export const CHECKS = [
     id: "supabase-session", group: "Auth", title: "Server code validates the Supabase session",
     run(p) {
       if (!p.stack.includes("Supabase")) return [];
-      const server = p.source.filter((f) => /middleware\.[jt]s$/.test(f) || p.endpoints.includes(f));
+      const server = p.source.filter((f) => f === p.middleware || p.endpoints.includes(f));
       return server
         .filter((f) => /auth\.getSession\s*\(/.test(p.code(f)) && !/auth\.getUser\s*\(|getClaims\s*\(/.test(p.code(f)) && !p.ignored(f, "supabase-session"))
         .map((f) => warn(f, "trusts auth.getSession() on the server", "getSession reads the cookie without validating it. Use auth.getUser() before acting on who the user is."));
@@ -224,6 +338,7 @@ export const CHECKS = [
   {
     id: "supabase-rls", group: "Database", title: "Every table has row level security",
     run(p) {
+      if (!p.stack.includes("Supabase")) return []; // RLS matters where the database is exposed through Supabase's API
       const sql = p.files.filter((f) => f.endsWith(".sql") && /migrations?\/|supabase\//.test(f));
       if (!sql.length) return [];
       const created = new Map(), secured = new Set();
@@ -259,6 +374,7 @@ export const CHECKS = [
       // SECURITY DEFINER functions run with the owner's rights and, in the
       // public schema, are callable by anyone at /rest/v1/rpc/<name> unless
       // execute is revoked. One that adds credits is free credits.
+      if (!p.stack.includes("Supabase")) return []; // RLS matters where the database is exposed through Supabase's API
       const sql = p.files.filter((f) => f.endsWith(".sql") && /migrations?\/|supabase\//.test(f));
       if (!sql.length) return [];
       const all = sql.map((f) => p.read(f).replace(/--.*$/gm, "")).join("\n");
@@ -291,6 +407,43 @@ export const CHECKS = [
           if (!m[1] && !used.has(m[2])) used.set(m[2], f);
       return [...used].filter(([t]) => !made.has(t.toLowerCase())).filter(([, f]) => !p.ignored(f, "supabase-tables"))
         .map(([t, f]) => warn(f, `queries table ${t}, which no migration creates`, "A fresh environment will not have it, so this query fails after the next deploy or database reset."));
+    },
+  },
+
+  {
+    id: "firebase-rules", group: "Database", title: "Firebase rules don't allow everyone",
+    run(p) {
+      const out = [];
+      for (const f of p.files.filter((f) => /(^|\/)(firestore|storage)\.rules$/.test(f))) {
+        const t = p.read(f).replace(/\/\/.*$/gm, "");
+        if (/allow\s+[^;]*:\s*if\s+true\s*;/.test(t))
+          out.push(fail(f, "has a rule that allows anyone (if true)", "Every visitor can read or write that data with your public Firebase config."));
+        else if (/allow\s+[^;]*:\s*if\s+request\.time\s*<\s*timestamp\.date/.test(t))
+          out.push(fail(f, "still has the test-mode rules", "Anyone can read and write everything until the date passes, then the app stops working."));
+      }
+      for (const f of p.files.filter((f) => /(^|\/)database\.rules\.json$/.test(f))) {
+        if (/"\.(read|write)"\s*:\s*(true|"true")/.test(p.read(f)))
+          out.push(fail(f, "allows anyone to read or write", "Set .read and .write to conditions on auth, not true."));
+      }
+      return out;
+    },
+  },
+  {
+    id: "raw-sql", group: "Database", title: "No SQL built from strings",
+    run(p) {
+      // Tagged templates (prisma.$queryRaw`…`, sql`…`) are parameterised and
+      // safe. These forms paste values into the SQL text.
+      // A call that passes values separately (a second argument) is
+      // parameterised even when the text is assembled, e.g. building "?, ?, ?".
+      const RAW = [
+        /\$(queryRaw|executeRaw)Unsafe\s*\(\s*(`[^`]*\$\{[^`]*`|[^),]*\+[^),]*)\s*\)/,
+        /\bsql\.raw\s*\(\s*(`[^`]*\$\{[^`]*`|[^)]*\+[^)]*)\s*\)/,
+        /\.(query|execute|unsafe)\s*\(\s*`\s*(select|insert|update|delete|with)\b[^`]*\$\{[^`]*`\s*\)/i,
+        /\.(query|execute|unsafe)\s*\(\s*["'](select|insert|update|delete)\b[^"']*["']\s*\+[^),]*\)/i,
+      ];
+      return p.source
+        .filter((f) => RAW.some((re) => re.test(p.code(f))) && !p.ignored(f, "raw-sql"))
+        .map((f) => fail(f, "builds SQL by pasting values into the query text", "If any value comes from a request, that is SQL injection. Pass values as parameters, or use a tagged template like sql`…` or $queryRaw`…`."));
     },
   },
 

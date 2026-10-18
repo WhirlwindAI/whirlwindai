@@ -67,13 +67,16 @@ const warns = all.filter((f) => f.level === "warn").length + (deep || []).filter
 const code = fails ? 1 : warns ? 2 : 0;
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ version: VERSION, project: p.pkg.name || basename(dir), stack: p.stack, fails, warns, results, deep }, null, 2));
+  console.log(JSON.stringify({ version: VERSION, project: p.pkg.name || basename(dir), stack: p.stack, apps: p.nestedApps, fails, warns, results, deep }, null, 2));
   process.exit(code);
 }
 
 console.log(`\n${bold("whirlwindai check")}  ${dim("·")}  ${p.pkg.name || basename(dir)}`);
 if (p.stack.length) console.log(dim(p.stack.join(" · ")));
 if (!p.isGit) console.log(yellow("Not a git repository: scanning every file, including ones .gitignore would skip."));
+if (!p.deps.next && p.nestedApps.length)
+  console.log(yellow(`This looks like a monorepo root. Check each app on its own:\n${p.nestedApps.map((a) => `  npx whirlwindai ${a}`).join("\n")}`));
+else if (!p.deps.next) console.log(yellow("No Next.js dependency found. The general checks still apply; route-specific ones assume Next.js conventions."));
 
 let group = "";
 for (const r of results) {

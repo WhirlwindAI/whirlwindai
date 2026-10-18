@@ -11,6 +11,7 @@ export const RETIRED = [
   /^gpt-4(-1106)?-vision-preview$/,
   /^gpt-4\.5-preview(-2025-02-27)?$/,
   /^o1-preview(-2024-09-12)?$/,
+  /^dall-e-[23]$/, // removed from the API on 2026-05-12
   // Anthropic
   /^claude-instant(-1(\.\d)?)?$/,
   /^claude-(1|2)(\.\d)?$/,
@@ -27,7 +28,6 @@ export const RETIRED = [
 export const DEPRECATED = [
   /^gpt-4-(0314|1106-preview|0125-preview|turbo-preview)$/,
   /^o1-mini(-2024-09-12)?$/,
-  /^dall-e-[23]$/,
   /^claude-3-7-sonnet-(20250219|latest)$/,
   /^claude-3-5-haiku-(20241022|latest)$/,
   /^claude-3-haiku-20240307$/,

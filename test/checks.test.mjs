@@ -199,6 +199,23 @@ test("false positives from real projects stay quiet", () => {
   assert.deepEqual(found, []);
 });
 
+test("origin-links: emailed links from the Origin header, and the guarded form", () => {
+  const { ids } = run(project({
+    "package.json": PKG,
+    "app/api/referral/signup/route.ts": 'import { headers } from "next/headers";\nimport { sendEmail } from "../../../../lib/email";\nfunction originFrom() {\n  return headers().get("origin") || "http://localhost:3000";\n}\nexport async function POST(req) {\n  const origin = originFrom();\n  await sendEmail({ html: `<a href="${origin}/dashboard?token=x">Open</a>` });\n  return Response.json({});\n}\n',
+    "app/api/share/route.ts": 'export async function GET(req) {\n  const host = req.headers.get("host");\n  return Response.json({ url: `https://${host}/s/1` });\n}\n',
+    "app/api/safe/route.ts": 'import { headers } from "next/headers";\nimport { sendEmail } from "../../../lib/email";\nfunction originFrom() {\n  return process.env.NEXT_PUBLIC_APP_URL || headers().get("origin");\n}\nexport async function POST() { const origin = originFrom(); await sendEmail({ html: `${origin}/x` }); }\n',
+    // whirlwindai.xyz before its fix: the header first, the configured URL as the fallback.
+    "app/api/referral/stats/route.ts": 'import { headers } from "next/headers";\nimport { sendEmail } from "../../../../lib/email";\nfunction originFrom() {\n  return (\n    headers().get("origin") ||\n    process.env.NEXT_PUBLIC_APP_URL ||\n    "http://localhost:3000"\n  );\n}\nexport async function POST() { const origin = originFrom(); await sendEmail({ html: `${origin}/d?token=1` }); }\n',
+    "lib/email.ts": "export async function sendEmail(x) {}\n",
+  }));
+  const text = (ids.get("origin-links") || []).map((f) => `${f.level} ${f.file} ${f.msg}`).join("\n");
+  assert.match(text, /fail app\/api\/referral\/signup\/route\.ts emails links/);
+  assert.match(text, /warn app\/api\/share\/route\.ts builds URLs/);
+  assert.match(text, /fail app\/api\/referral\/stats\/route\.ts emails links/);
+  assert.doesNotMatch(text, /safe/);
+});
+
 test("--quiet lists only checks with findings", () => {
   const root = project({ "package.json": PKG, "next.config.js": 'module.exports = { images: { remotePatterns: [{ hostname: "**" }] } };\n' });
   const out = spawnSync(process.execPath, [CLI, root, "--quiet", "--no-color"], { encoding: "utf8" }).stdout;

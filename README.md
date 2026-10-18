@@ -23,6 +23,7 @@ No install, no account, no config. It reads your code locally and sends nothing 
 | | `stripe-redirect` | success and cancel URLs built from the caller's Origin header |
 | | `webhooks` | Lemon Squeezy, Paddle, Polar, Clerk, GitHub and other webhooks that don't verify the sender |
 | Auth | `open-redirect` | `?next=` and similar parameters redirected to without a check |
+| | `origin-links` | links built from the caller's Origin or Host header, a problem when they're emailed |
 | | `supabase-session` | server code trusting `auth.getSession()` |
 | Database | `supabase-rls` | tables without row level security, and policies that allow any write |
 | | `supabase-rpc` | `SECURITY DEFINER` functions anyone can call through the API |

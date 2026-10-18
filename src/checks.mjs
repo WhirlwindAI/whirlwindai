@@ -324,6 +324,46 @@ export const CHECKS = [
     },
   },
   {
+    id: "origin-links", group: "Auth", title: "Links aren't built from the caller's Origin header",
+    run(p) {
+      // The Origin, Host and Referer headers are set by whoever sends the
+      // request. A URL built from them points wherever the caller likes, and
+      // when that URL is emailed (a sign-in or dashboard link, often with a
+      // token in it) the site sends a real user a genuine email pointing to
+      // another domain. Stripe's success/cancel URLs have their own check.
+      const HEADER = String.raw`(?:headers\(\)|\w*[hH]eaders\w*|req\.headers|request\.headers)\.get\(\s*["'](?:origin|host|x-forwarded-host|referer)["']\s*\)|(?:req|request)\.headers\.(?:origin|host|referer)\b`;
+      const FIRST = new RegExp(String.raw`(?:=|\(|return)\s*\(?\s*(?:${HEADER})`);
+      // Guarded: the configured URL comes before the header in the same
+      // expression, or the header is used only outside production. A
+      // configured URL *after* the header (header || env) is the bug itself.
+      const GUARDED = new RegExp(String.raw`process\.env\.\w*(?:URL|ORIGIN|DOMAIN|SITE|HOST)\w*\s*(?:\|\||\?\?)[^;]*?(?:${HEADER})|NODE_ENV\s*!==?\s*["']production["']|NODE_ENV\s*===?\s*["']development["']`);
+      const EMAILS = /\bsendEmail\s*\(|\.emails\.send\s*\(|\bsendMail\s*\(|\bresend\.|nodemailer|signInWithOtp|inviteUserByEmail|generateLink/;
+      const out = [];
+      for (const f of p.source) {
+        const t = p.code(f);
+        if (!new RegExp(HEADER).test(t) || GUARDED.test(t) || p.ignored(f, "origin-links")) continue;
+        if (/success_url|cancel_url|return_url/.test(t)) continue; // stripe-redirect
+        // Crawler files on multi-domain apps use the Host header on purpose.
+        if (/(^|\/)(robots|sitemap)\.[jt]s$/.test(f)) continue;
+        // Names that hold the header value: variables assigned from it, and
+        // helper functions that return it.
+        const names = new Set();
+        for (const m of t.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(\w+)\s*=\s*\(?\s*(?:${HEADER})`, "g"))) names.add(m[1]);
+        for (const m of t.matchAll(/function\s+(\w+)\s*\([^)]*\)\s*\{([^}]*)\}/g)) {
+          if (!FIRST.test(m[2])) continue;
+          names.add(`${m[1]}\\(\\)`); // the helper called inline: ${originFrom()}
+          for (const c of t.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s+(\w+)\s*=\s*${m[1]}\s*\(`, "g"))) names.add(c[1]);
+        }
+        const used = [...names].some((v) => new RegExp(String.raw`\$\{\s*${v}|\b${v}\s*\+\s*["'\`]|new URL\([^)]*,\s*${v}\s*\)`).test(t));
+        if (!used) continue;
+        out.push(EMAILS.test(t)
+          ? fail(f, "emails links built from the request's Origin header", "Anyone can send a request with their own Origin, and your site emails a real user a genuine link to another domain, with any token in it. Build links from your configured site URL.")
+          : warn(f, "builds URLs from the request's Origin or Host header", "Those headers are set by the caller. Use your configured site URL, and fall back to the header only in development."));
+      }
+      return out;
+    },
+  },
+  {
     id: "supabase-session", group: "Auth", title: "Server code validates the Supabase session",
     run(p) {
       if (!p.stack.includes("Supabase")) return [];

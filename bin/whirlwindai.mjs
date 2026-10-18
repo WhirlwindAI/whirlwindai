@@ -118,5 +118,7 @@ if (!QUIET) console.log(dim(`
 Whirlwind is a Next.js AI SaaS starter built for agent-driven development.
 It ships with these covered, plus 33 audit checks and 27 browser tests your
 agent runs on every change: https://whirlwindai.xyz
+
+Want an alert before a model you use is retired? https://whirlwindai.xyz/check#watch
 `));
 process.exit(code);

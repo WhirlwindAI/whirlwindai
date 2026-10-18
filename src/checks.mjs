@@ -464,7 +464,7 @@ export const CHECKS = [
     id: "precedence", group: "Code", title: "No dead fallbacks after string concatenation",
     run(p) {
       return p.source
-        .filter((f) => /\+\s*["'`][^"'`\n]*["'`]\s*\|\|/.test(p.code(f)) && !p.ignored(f, "precedence"))
+        .filter((f) => /\+\s*["'`][^"'`\n]*["'`]\s*\|\|/.test(p.blank(f)) && !p.ignored(f, "precedence"))
         .map((f) => fail(f, 'has `a + "text" || fallback`', '+ binds tighter than ||, so the left side is always a truthy string and the fallback never runs.'));
     },
   },

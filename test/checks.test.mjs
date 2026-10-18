@@ -180,6 +180,8 @@ test("false positives from real projects stay quiet", () => {
     "src/app/api/webhooks/[id]/route.ts": 'export const GET = withWorkspace(async () => Response.json([]));\n',
     // dub: admin routes wrapped in withAdmin.
     "src/app/api/admin/route.ts": 'import Anthropic from "@anthropic-ai/sdk";\nconst a = new Anthropic();\nexport const POST = withAdmin(async () => Response.json(await a.messages.create({})));\n',
+    // whirlwindai.xyz: the bug described inside a string is not the bug.
+    "src/lib/copy.ts": "export const help = ['precedence', 'a + \"text\" || fallback never runs'];\n",
     // chatbot-ui: an organisation ID is not a secret.
     "src/lib/org.ts": "export const org = process.env.NEXT_PUBLIC_OPENAI_ORGANIZATION_ID;\n",
     // Drizzle migrations: no Supabase API in front, so RLS doesn't apply.

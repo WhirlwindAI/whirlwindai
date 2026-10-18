@@ -16,9 +16,16 @@ const RESOLVE_EXT = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".cs
 // literal contents blanked too (docs pages keep code samples in them).
 // Newlines are kept everywhere so line-based patterns still line up.
 export function lex(src) {
-  let code = "", bare = "", i = 0, prev = "";
+  let code = "", bare = "", blank = "", i = 0, prev = "";
   const n = src.length;
-  const keep = (s, inTemplate) => { code += s; bare += inTemplate ? s.replace(/[^\n]/g, " ") : s; };
+  // inTemplate: template literal text. inString: the inside of a quoted
+  // string, blanked only in `blank`, where an operator inside a string (a
+  // description of a bug, say) must not read as code.
+  const keep = (s, inTemplate, inString) => {
+    code += s;
+    bare += inTemplate ? s.replace(/[^\n]/g, " ") : s;
+    blank += inTemplate || inString ? s.replace(/[^\n]/g, " ") : s;
+  };
   const regexAllowed = () => /[(,=:[!&|?{};+\-*%<>~^]$|^$/.test(prev) || /\b(return|typeof|case|do|else|in|of|void|yield|await)$/.test(code.slice(-16).trimEnd());
   const templateDepth = [];
   const PLAIN = /[\/"'`{}]/g;
@@ -32,7 +39,8 @@ export function lex(src) {
     if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < n && src[j] !== c && src[j] !== "\n") j += src[j] === "\\" ? 2 : 1;
-      keep(src.slice(i, j + 1), false); i = j + 1; prev = c; continue;
+      keep(c, false); keep(src.slice(i + 1, j), false, true); if (j < n) keep(src[j], false);
+      i = j + 1; prev = c; continue;
     }
     if (c === "`") { keep("`", false); i = template(i + 1); prev = "`"; continue; }
     if (c === "/" && regexAllowed()) {
@@ -56,7 +64,7 @@ export function lex(src) {
     if (last) prev = last[last.length - 1];
     i = end;
   }
-  return { code, bare };
+  return { code, bare, blank };
 
   // Reads template text from i to the closing backtick or the next "${".
   function template(i) {
@@ -125,12 +133,14 @@ export function loadProject(root) {
   };
   const lexCache = new Map();
   const lexed = (rel) => {
-    if (!lexCache.has(rel)) lexCache.set(rel, SOURCE.test(rel) ? lex(read(rel)) : { code: read(rel), bare: read(rel) });
+    if (!lexCache.has(rel)) lexCache.set(rel, SOURCE.test(rel) ? lex(read(rel)) : { code: read(rel), bare: read(rel), blank: read(rel) });
     return lexCache.get(rel);
   };
   // code: comments removed. bare: template literal contents blanked as well.
   const code = (rel) => lexed(rel).code;
   const bare = (rel) => lexed(rel).bare;
+  // blank: string and template contents blanked too; quotes kept.
+  const blank = (rel) => lexed(rel).blank;
 
   const pkg = (() => { try { return JSON.parse(read("package.json")); } catch { return {}; } })();
   const deps = { ...pkg.dependencies, ...pkg.devDependencies };
@@ -316,7 +326,7 @@ export function loadProject(root) {
   if (ai.length) stack.push(ai.join(", "));
 
   return {
-    root, files, tracked, read, code, bare, has: (rel) => fileSet.has(rel), pkg, deps, source,
+    root, files, tracked, read, code, bare, blank, has: (rel) => fileSet.has(rel), pkg, deps, source,
     appDir, pagesDir, endpoints, middleware, isTooling, nestedApps, resolve, importsOf, withLocalImports, ignored, stack,
     isGit: listed !== null,
   };

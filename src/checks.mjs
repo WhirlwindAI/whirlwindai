@@ -21,6 +21,8 @@ const CALLS_MODEL = /\.chat\.completions\.create\s*\(|\.responses\.create\s*\(|\
 const AI_IMPORT = /from\s+["'](openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai|ai|@ai-sdk\/[\w-]+|groq-sdk|@mistralai\/mistralai|cohere-ai|replicate)["']|require\(\s*["'](openai|@anthropic-ai\/sdk|@google\/generative-ai|@google\/genai)["']/;
 const AI_HTTP = /api\.openai\.com\/v1\/(chat|responses|images|completions)|api\.anthropic\.com\/v1\/messages|generativelanguage\.googleapis\.com/;
 const callsModel = (t) => /new AIClient\s*\(/.test(t) || AI_HTTP.test(t) || (CALLS_MODEL.test(t) && AI_IMPORT.test(t));
+// A redirect target checked to be a same-site path, or against an allowlist.
+const SAFE_TARGET = /startsWith\(\s*["'`]\/|\/\^\\\/|safe\w*\(|isSafe|isRelative|sanitize|allowlist|ALLOWED|\.origin\s*===|\.host\s*===/;
 const CHECKS_AUTH = /\b(getUser|getServerSession|getSession|currentUser|auth|getAuth|requireUser|requireAuth|requireSession|withAuth|withApiAuthRequired|getToken|verifyToken|verifyIdToken|validateRequest|getCurrentUser|getAppUser|getAuthenticatedUser|getUserOrThrow|protect)\s*\(|\bwithAuth\b|\bauth\.protect\b/;
 const LIMITS = /ratelimit|rate_limit|rateLimit|limiter|throttle|quota|credits?\b|\bcharge\s*\(|consume_?\w*\s*\(|checkUsage|usageLimit|maxRequests/i;
 
@@ -182,7 +184,7 @@ export const CHECKS = [
         const t = p.code(f);
         if (!/(success_url|cancel_url|return_url)[^\n]*\b(origin|referer|returnUrl|successUrl|cancelUrl|redirectUrl)\b/.test(t) || p.ignored(f, "stripe-redirect")) continue;
         // Falling back to the header in development only is fine.
-        if (/NODE_ENV\s*!==?\s*["']production["']|NODE_ENV\s*===?\s*["']development["']/.test(t)) continue;
+        if (/NODE_ENV\s*!==?\s*["']production["']|NODE_ENV\s*===?\s*["']development["']/.test(t) || SAFE_TARGET.test(t)) continue;
         if (/\.get\(\s*["'](origin|referer|host)["']\s*\)\s*\|\||headers\.(origin|referer|host)\s*\|\|/.test(t))
           out.push(fail(f, "prefers the request's Origin header over your configured URL", "Anyone can call it with their own Origin and send your buyers to a lookalike site after paying. Use the configured URL; fall back to the header only in development."));
         else if (/headers\.get\(\s*["'](origin|referer|host)["']|headers\.(origin|referer|host)\b|\.json\s*\(\s*\)|req\.body/.test(t))
@@ -201,7 +203,7 @@ export const CHECKS = [
         const t = p.code(f);
         const m = t.match(/\.get\(\s*["'](next|redirect|redirectTo|redirect_to|returnTo|return_to|callbackUrl|callback|continue|from)["']\s*\)/);
         if (!m || !/redirect\s*\(|\.push\s*\(|\.replace\s*\(|location\s*(\.href\s*)?=|location\.assign/.test(t)) continue;
-        if (/startsWith\(\s*["'`]\/|safe\w*\(|isSafe|isRelative|sanitize|allowlist|ALLOWED|\.origin\s*===|\.host\s*===/.test(t) || p.ignored(f, "open-redirect")) continue;
+        if (SAFE_TARGET.test(t) || p.ignored(f, "open-redirect")) continue;
         out.push(fail(f, `redirects to the "${m[1]}" query parameter unchecked`, `A link with ?${m[1]}=https://evil.example signs the user in and hands them to another site. Accept only paths starting with a single "/".`));
       }
       return out;

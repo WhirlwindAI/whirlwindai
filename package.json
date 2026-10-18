@@ -28,5 +28,12 @@
     "lint"
   ],
   "homepage": "https://whirlwindai.xyz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WhirlwindAI/whirlwindai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WhirlwindAI/whirlwindai/issues"
+  },
   "license": "MIT"
 }

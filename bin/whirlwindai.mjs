@@ -54,7 +54,7 @@ const ctx = {};
 const results = CHECKS.map((check) => {
   let findings;
   try { findings = check.run(p, ctx); }
-  catch (e) { findings = [{ level: "warn", file: "", msg: `check crashed: ${e.message}`, detail: "Please report it to hello@whirlwindai.xyz" }]; }
+  catch (e) { findings = [{ level: "warn", file: "", msg: `check crashed: ${e.message}`, detail: "Please report it at https://github.com/WhirlwindAI/whirlwindai/issues" }]; }
   return { id: check.id, group: check.group, title: check.title, findings };
 });
 

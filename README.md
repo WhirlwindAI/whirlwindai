@@ -81,6 +81,10 @@ Add a comment to the file naming the check and the reason:
 
 It reads code; it doesn't run it. Each check is a pattern match tuned against real projects (including Vercel's AI chatbot, Commerce and SaaS starter, Dub, chatbot-ui, Taxonomy, Novel and the LangChain and LlamaIndex templates), so it can miss a problem written in an unusual way, and occasionally flag something that's fine. Build scripts, tests, scaffolds, examples, generated code and git submodules are skipped.
 
+## Contributing
+
+Found a false positive, or a mistake it should catch? [Open an issue](https://github.com/WhirlwindAI/whirlwindai/issues) with a minimal example. Run the tests with `npm test`.
+
 ## Whirlwind
 
 [Whirlwind](https://whirlwindai.xyz) is a Next.js AI SaaS starter built for agent-driven development. It ships with all of this covered, plus 33 audit checks and 27 browser tests that your agent runs on every change.

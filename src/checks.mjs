@@ -195,7 +195,7 @@ export const CHECKS = [
     id: "models", group: "AI cost", title: "No retired or deprecated model IDs",
     run(p, ctx) {
       const found = new Map();
-      for (const f of [...p.source, ...p.files.filter((f) => /(^|\/)(\.env\.example|[\w.-]+\.json)$/.test(f) && !/package(-lock)?\.json$/.test(f))]) {
+      for (const f of [...p.source, ...p.files.filter((f) => /(^|\/)(\.env\.example|[\w.-]+\.json)$/.test(f) && !/package(-lock)?\.json$/.test(f) && !p.isTooling(f))]) {
         const t = p.code(f);
         for (const m of t.matchAll(/["'`=]\s*([a-z][a-z0-9.\-@:]+)["'`\s]?/g)) {
           const id = m[1];
@@ -339,7 +339,7 @@ export const CHECKS = [
     id: "supabase-rls", group: "Database", title: "Every table has row level security",
     run(p) {
       if (!p.stack.includes("Supabase")) return []; // RLS matters where the database is exposed through Supabase's API
-      const sql = p.files.filter((f) => f.endsWith(".sql") && /migrations?\/|supabase\//.test(f));
+      const sql = p.files.filter((f) => f.endsWith(".sql") && !p.isTooling(f) && /migrations?\/|supabase\//.test(f));
       if (!sql.length) return [];
       const created = new Map(), secured = new Set();
       for (const f of sql) {
@@ -375,7 +375,7 @@ export const CHECKS = [
       // public schema, are callable by anyone at /rest/v1/rpc/<name> unless
       // execute is revoked. One that adds credits is free credits.
       if (!p.stack.includes("Supabase")) return []; // RLS matters where the database is exposed through Supabase's API
-      const sql = p.files.filter((f) => f.endsWith(".sql") && /migrations?\/|supabase\//.test(f));
+      const sql = p.files.filter((f) => f.endsWith(".sql") && !p.isTooling(f) && /migrations?\/|supabase\//.test(f));
       if (!sql.length) return [];
       const all = sql.map((f) => p.read(f).replace(/--.*$/gm, "")).join("\n");
       const out = [];
@@ -397,7 +397,7 @@ export const CHECKS = [
   {
     id: "supabase-tables", group: "Database", title: "Every queried table has a migration",
     run(p) {
-      const sql = p.files.filter((f) => f.endsWith(".sql") && /migrations?\//.test(f));
+      const sql = p.files.filter((f) => f.endsWith(".sql") && !p.isTooling(f) && /migrations?\//.test(f));
       if (!sql.length || !p.stack.includes("Supabase")) return [];
       const made = new Set();
       for (const f of sql) for (const m of p.read(f).matchAll(/create\s+(?:table|view|materialized\s+view)\s+(?:if\s+not\s+exists\s+)?(?:"?\w+"?\.)?"?(\w+)"?/gi)) made.add(m[1].toLowerCase());
@@ -414,14 +414,14 @@ export const CHECKS = [
     id: "firebase-rules", group: "Database", title: "Firebase rules don't allow everyone",
     run(p) {
       const out = [];
-      for (const f of p.files.filter((f) => /(^|\/)(firestore|storage)\.rules$/.test(f))) {
+      for (const f of p.files.filter((f) => /(^|\/)(firestore|storage)\.rules$/.test(f) && !p.isTooling(f))) {
         const t = p.read(f).replace(/\/\/.*$/gm, "");
         if (/allow\s+[^;]*:\s*if\s+true\s*;/.test(t))
           out.push(fail(f, "has a rule that allows anyone (if true)", "Every visitor can read or write that data with your public Firebase config."));
         else if (/allow\s+[^;]*:\s*if\s+request\.time\s*<\s*timestamp\.date/.test(t))
           out.push(fail(f, "still has the test-mode rules", "Anyone can read and write everything until the date passes, then the app stops working."));
       }
-      for (const f of p.files.filter((f) => /(^|\/)database\.rules\.json$/.test(f))) {
+      for (const f of p.files.filter((f) => /(^|\/)database\.rules\.json$/.test(f) && !p.isTooling(f))) {
         if (/"\.(read|write)"\s*:\s*(true|"true")/.test(p.read(f)))
           out.push(fail(f, "allows anyone to read or write", "Set .read and .write to conditions on auth, not true."));
       }

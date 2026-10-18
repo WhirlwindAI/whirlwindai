@@ -59,6 +59,7 @@ Any Next.js app: App Router or Pages Router, JavaScript or TypeScript, with or w
 npx whirlwindai ./path/to/app   # check another directory
 npx whirlwindai --deep          # also confirm your keys can use every model ID in the code
 npx whirlwindai --json          # machine-readable output
+npx whirlwindai --quiet         # only show checks with findings
 ```
 
 `--deep` reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `GOOGLE_AI_API_KEY` (or `GEMINI_API_KEY`) from the environment, `.env.local` or `.env`, and asks each provider for the list of models that key can use. Each key is sent only to its own provider.

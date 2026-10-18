@@ -25,6 +25,7 @@ Usage
   npx whirlwindai --deep         also ask OpenAI, Anthropic and Google which
                                  models your keys can use (reads .env.local)
   npx whirlwindai --json         machine-readable output
+  npx whirlwindai --quiet        only show checks with findings
   npx whirlwindai --list         list the checks
 
 Silence one finding with a comment in the file:
@@ -40,7 +41,10 @@ if (flag("--list")) {
 }
 
 const JSON_OUT = flag("--json");
-const color = !JSON_OUT && process.stdout.isTTY && !flag("--no-color") && !process.env.NO_COLOR;
+// FORCE_COLOR keeps colour when output is piped (CI logs, recordings).
+const QUIET = flag("--quiet") || flag("-q");
+const color = !JSON_OUT && !flag("--no-color") && !process.env.NO_COLOR &&
+  (process.stdout.isTTY || (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== "0"));
 const c = (code) => (s) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
 const [red, green, yellow, dim, bold, cyan] = [31, 32, 33, 2, 1, 36].map(c);
 
@@ -80,6 +84,8 @@ else if (!p.deps.next) console.log(yellow("No Next.js dependency found. The gene
 
 let group = "";
 for (const r of results) {
+  const showDeep = r.id === "models" && deep;
+  if (QUIET && !r.findings.length && !showDeep) continue;
   if (r.group !== group) { group = r.group; console.log(`\n${bold(group)}`); }
   if (!r.findings.length) console.log(`  ${green("✓")} ${r.title}`);
   else {
@@ -99,7 +105,7 @@ for (const r of results) {
     }
   }
 }
-if (!flag("--deep") && ctx.models?.size) console.log(dim(`\n  ${ctx.models.size} model ID(s) found. Run with --deep to confirm your keys can use them.`));
+if (!QUIET && !flag("--deep") && ctx.models?.size) console.log(dim(`\n  ${ctx.models.size} model ID(s) found. Run with --deep to confirm your keys can use them.`));
 
 const secs = ((Date.now() - t0) / 1000).toFixed(1);
 console.log(`\n${"─".repeat(60)}`);
@@ -108,7 +114,7 @@ console.log(
   : warns ? `${green("No problems")}, ${yellow(`${warns} warning(s)`)} to review  ${dim(`· ${CHECKS.length} checks · ${secs}s`)}`
   : `${green("All checks passed")}  ${dim(`· ${CHECKS.length} checks · ${secs}s`)}`,
 );
-console.log(dim(`
+if (!QUIET) console.log(dim(`
 Whirlwind is a Next.js AI SaaS starter built for agent-driven development.
 It ships with these covered, plus 33 audit checks and 27 browser tests your
 agent runs on every change: https://whirlwindai.xyz

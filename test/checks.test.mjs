@@ -189,12 +189,21 @@ test("false positives from real projects stay quiet", () => {
     // An embedded project with its own config is checked on its own.
     "preview-kit/package.json": "{}",
     "preview-kit/ui/dialog.tsx": 'import { Button } from "@/components/ui/button";\n',
+    // A sample project inside tools/ is not this project's database.
+    "tools/demo/sample/supabase/migrations/001.sql": "create table public.x (id int);\n",
   }));
   // error-pages, env-example and ai-limit (the admin route has no limit) are correct here.
   const found = [...ids]
     .filter(([id, f]) => f.length && !["error-pages", "env-example", "ai-limit"].includes(id))
     .map(([id, f]) => `${id}: ${f.map((x) => x.file + " " + x.msg).join("; ")}`);
   assert.deepEqual(found, []);
+});
+
+test("--quiet lists only checks with findings", () => {
+  const root = project({ "package.json": PKG, "next.config.js": 'module.exports = { images: { remotePatterns: [{ hostname: "**" }] } };\n' });
+  const out = spawnSync(process.execPath, [CLI, root, "--quiet", "--no-color"], { encoding: "utf8" }).stdout;
+  assert.match(out, /image optimizer is not an open proxy/);
+  assert.doesNotMatch(out, /✓ No env files committed/);
 });
 
 test("lexer separates code from comments, strings and templates", () => {

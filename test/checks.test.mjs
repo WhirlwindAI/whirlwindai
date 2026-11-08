@@ -230,3 +230,9 @@ test("lexer separates code from comments, strings and templates", () => {
   assert.match(bare, /\$\{b \+ ` `/);
   assert.doesNotMatch(bare, /x \/\/ y/);
 });
+
+test("model status: retired image models, and their live siblings", async () => {
+  const { status } = await import("../src/models.mjs");
+  for (const id of ["gpt-image-1", "dall-e-3", "dall-e-2"]) assert.equal(status(id), "retired", id);
+  for (const id of ["gpt-image-1-mini", "gpt-image-1.5", "gpt-image-2"]) assert.equal(status(id), null, id);
+});

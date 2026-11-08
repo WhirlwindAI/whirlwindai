@@ -12,6 +12,7 @@ export const RETIRED = [
   /^gpt-4\.5-preview(-2025-02-27)?$/,
   /^o1-preview(-2024-09-12)?$/,
   /^dall-e-[23]$/, // removed from the API on 2026-05-12
+  /^gpt-image-1$/, // shut down on 2026-10-23 (not gpt-image-1-mini or 1.5)
   // Anthropic
   /^claude-instant(-1(\.\d)?)?$/,
   /^claude-(1|2)(\.\d)?$/,

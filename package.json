@@ -35,5 +35,9 @@
   "bugs": {
     "url": "https://github.com/WhirlwindAI/whirlwindai/issues"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  }
 }
